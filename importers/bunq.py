@@ -5,7 +5,6 @@ from datetime import datetime
 import logging
 import os
 import re
-# from titlecase import titlecase
 
 from beancount.core import account
 from beancount.core import amount
@@ -15,6 +14,7 @@ from beancount.core.number import D
 from beancount.core.position import Cost
 from beancount.ingest import importer
 
+# starting point was mterwill's gist: https://gist.github.com/mterwill/7fdcc573dc1aa158648aacd4e33786e8
 
 class BunqImporter(importer.ImporterProtocol):
     match_re = re.compile(r'''
@@ -27,7 +27,7 @@ class BunqImporter(importer.ImporterProtocol):
     def __init__(self, root, *accounts):
         self.root = root
         self.accounts = set([root] + list(accounts))
-        self.accounts_by_iban = { a.iban: a for a in accounts }
+        self.accounts_by_iban = { a.iban: a for a in self.accounts }
 
     def identify(self, f):
         return BunqImporter.match_re.match(f.name)
@@ -51,28 +51,35 @@ class BunqImporter(importer.ImporterProtocol):
                   yield row
 
         def row_to_txn(row):
-            logging.error(row)
-            # import pdb; pdb.set_trace()
-            date = datetime.fromisoformat(row['Date']).date()
-            amount_  = row['Amount'].replace(',', '.', 1)
-            account = self.accounts_by_iban[row['Account']]
-            posting = data.Posting(
-                account.bean, amount.Amount(D(amount_), account.currency),
-                None, None, None, None)
-            # counterparty = accounts_by_iban.get(row.get('Counterparty'))
-            # do counterparty stuff.
+            try:
+                date = datetime.fromisoformat(row['Date']).date()
+                # using locale is a PITA, do the hack.
+                amount_  = row['Amount'] \
+                    .replace(',', ' ') \
+                    .replace('.', ',') \
+                    .replace(' ', '.')
+                account = self.accounts_by_iban[row['Account']]
+                posting = data.Posting(
+                    account.bean, amount.Amount(D(amount_), account.currency),
+                    None, None, None, None)
+                # counterparty = accounts_by_iban.get(row.get('Counterparty'))
+                # do counterparty stuff. specifically for bunq at least, note a transfer between sub
+                # accounts.
 
-            txn = data.Transaction(
-                meta=row['_meta'],
-                date=date,
-                flag=flags.FLAG_OKAY,
-                payee=row['Name'],
-                narration=row['Description'],
-                tags=set(),
-                links=set(),
-                postings=[posting],
-            )
-            return txn
+                txn = data.Transaction(
+                    meta=row['_meta'],
+                    date=date,
+                    flag=flags.FLAG_OKAY,
+                    payee=row['Name'],
+                    narration=row['Description'],
+                    tags=set(),
+                    links=set(),
+                    postings=[posting],
+                )
+                return txn
+            except:
+                logging.error(f'failed on row: {row}')
+                raise
 
         return [row_to_txn(row) for row in rows()]
 
