@@ -24,9 +24,9 @@ class BunqImporter(importer.ImporterProtocol):
         ''',
         flags=re.VERBOSE)
 
-    def __init__(self, root, *accounts):
+    def __init__(self, root, *subs):
         self.root = root
-        self.accounts = set([root] + list(accounts))
+        self.accounts = set([root] + list(subs))
         self.accounts_by_iban = { a.iban: a for a in self.accounts }
 
     def identify(self, f):
@@ -63,7 +63,7 @@ class BunqImporter(importer.ImporterProtocol):
                     account.bean, amount.Amount(D(amount_), account.currency),
                     None, None, None, None)
                 # counterparty = accounts_by_iban.get(row.get('Counterparty'))
-                # do counterparty stuff. specifically for bunq at least, note a transfer between sub
+                # TODO do counterparty stuff. specifically for bunq at least, note a transfer between sub
                 # accounts.
 
                 txn = data.Transaction(
@@ -82,65 +82,3 @@ class BunqImporter(importer.ImporterProtocol):
                 raise
 
         return [row_to_txn(row) for row in rows()]
-
-#   def extract_(self, f):
-#       entries = []
-
-#       with open(f.name) as f:
-#           for index, row in enumerate(csv.DictReader(f)):
-#               trans_date = parse(row['Trans Date']).date()
-#               trans_desc = titlecase(row['Description'])
-#               trans_amt  = row['Amount']
-
-#               meta = data.new_metadata(f.name, index)
-
-#               txn = data.Transaction(
-#                   meta=meta,
-#                   date=trans_date,
-#                   flag=flags.FLAG_OKAY,
-#                   payee=trans_desc,
-#                   narration="",
-#                   tags=set(),
-#                   links=set(),
-#                   postings=[],
-#               )
-
-#               txn.postings.append(
-#                   data.Posting(self.account, amount.Amount(D(trans_amt),
-#                       'USD'), None, None, None, None)
-#               )
-
-#               entries.append(txn)
-
-#       return entries
-
-#   def extract__(self, f):
-#       entries = []
-
-#       with open(f.name) as f:
-#           for index, row in enumerate(csv.DictReader(f)):
-#               trans_date = parse(row['Posting Date']).date()
-#               trans_desc = titlecase(row['Description'])
-#               trans_amt  = row['Amount']
-
-#               meta = data.new_metadata(f.name, index)
-
-#               txn = data.Transaction(
-#                   meta=meta,
-#                   date=trans_date,
-#                   flag=flags.FLAG_OKAY,
-#                   payee=trans_desc,
-#                   narration="",
-#                   tags=set(),
-#                   links=set(),
-#                   postings=[],
-#               )
-
-#               txn.postings.append(
-#                   data.Posting(self.account, amount.Amount(D(trans_amt),
-#                       'USD'), None, None, None, None)
-#               )
-
-#               entries.append(txn)
-
-#       return entries
