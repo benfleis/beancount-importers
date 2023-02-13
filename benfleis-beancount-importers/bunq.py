@@ -17,64 +17,65 @@ from beancount.ingest import importer
 # starting point was mterwill's gist: https://gist.github.com/mterwill/7fdcc573dc1aa158648aacd4e33786e8
 
 class BunqImporter(importer.ImporterProtocol):
-    match_re = re.compile(r'''
-        ^(.*/)?
-        \d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_bunq-statement[.]csv
-        $
-        ''',
-        flags=re.VERBOSE)
+    def __init__(self, accounts_by_id):
+        self.accounts_by_id = accounts_by_id
+        self.bunq_account_ids = {id for id, acct in accounts_by_id.items() if acct.institution == 'Bunq'} 
 
-    def __init__(self, root, *subs):
-        self.root = root
-        self.accounts = set([root] + list(subs))
-        self.accounts_by_iban = { a.iban: a for a in self.accounts }
+    def identify(self, file):
+        # check known account-specific matchers
+        for id, acct in self.accounts_by_id.items():
+            m = acct.file_match_re and acct.file_match_re.match(file.name)
+            if m and m.groupdict()['id'] == id and acct.institution == 'Bunq':
+                return m
+        return None
 
-    def identify(self, f):
-        return BunqImporter.match_re.match(f.name)
 
-    def file_name(self, file):
-        return 'bunq.{}'.format(path.basename(file.name))
-
-    def file_account(self, _):
-        return self.root.bean
-
-    #def file_date(self, file):
-    #    # Extract the statement date from the filename.
-    #    return datetime.datetime.strptime(path.basename(file.name),
-    #                                      'UTrade%Y%m%d.csv').date()
+    def file_date(self, file):
+        m = self.identify(file)
+        assert(m != None)
+        return datetime.strptime(m['end_date'], '%Y-%m-%d').date()
 
     def extract(self, file):
+        m = self.identify(file)
+        assert(m != None)
+
         def rows():
             with open(file.name) as f:
-                for index, row in enumerate(csv.DictReader(f, delimiter=';')):
+                reader = csv.DictReader(f, delimiter=';', quotechar='"')
+                for index, row in enumerate(reader):
                   row['_meta'] = data.new_metadata(file.name, index)
                   yield row
 
         def row_to_txn(row):
             try:
+                acct = self.accounts_by_id[row['Account']]
                 date = datetime.fromisoformat(row['Date']).date()
                 # using locale is a PITA, do the hack.
-                amount_  = row['Amount'] \
-                    .replace(',', ' ') \
-                    .replace('.', ',') \
-                    .replace(' ', '.')
-                account = self.accounts_by_iban[row['Account']]
-                posting = data.Posting(
-                    account.bean, amount.Amount(D(amount_), account.currency),
-                    None, None, None, None)
-                # counterparty = accounts_by_iban.get(row.get('Counterparty'))
-                # TODO do counterparty stuff. specifically for bunq at least, note a transfer between sub
-                # accounts.
+                units = D(row['Amount'].replace(',', ' ').replace('.', ',').replace(' ', '.'))
+                desc = row['Description']
+                # TODO
+                # example row with Bunq's currency conversion
+                #  "2022-03-09";"2022-04-01";"-20,72";"XXXX";"";"UBER * PENDING";"UBER * PENDING help.uber.com, NL 22.36 USD, 1 USD = 0.92665 EUR"
+                postings = [
+                    data.Posting(acct.bean, amount.Amount(units, acct.currency), None, None, None, None)
+                ]
+                counterparty = row.get('Counterparty')
+                counterparty_acct = self.accounts_by_id.get(counterparty)
 
+                if counterparty_acct:
+                    assert counterparty_acct.currency == acct.currency # TODO allow multi-currency event.
+                    postings.append(
+                        data.Posting(counterparty_acct.bean, amount.Amount(-units, acct.currency), None, None, None, None)
+                    )
                 txn = data.Transaction(
                     meta=row['_meta'],
                     date=date,
-                    flag=flags.FLAG_OKAY,
-                    payee=row['Name'],
-                    narration=row['Description'],
+                    flag=flags.FLAG_TRANSFER if counterparty_acct else flags.FLAG_OKAY,
+                    payee=row['Name'] or counterparty,
+                    narration=desc,
                     tags=set(),
                     links=set(),
-                    postings=[posting],
+                    postings=postings,
                 )
                 return txn
             except:

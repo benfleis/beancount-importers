@@ -2,16 +2,15 @@
 
 import csv
 from datetime import datetime
+import itertools
 import logging
-import os
 import re
 
-from beancount.core import account
 from beancount.core import amount
 from beancount.core import flags
 from beancount.core import data
 from beancount.core.number import D
-from beancount.core.position import Cost
+# from beancount.core.position import Cost
 from beancount.ingest import importer
 
 # starting point was mterwill's gist: https://gist.github.com/mterwill/7fdcc573dc1aa158648aacd4e33786e8
@@ -41,36 +40,28 @@ field_names = [
 ]
 
 class ASNImporter(importer.ImporterProtocol):
-    match_re = re.compile(r'''
-        ^(.*/)?
-        (?P<account>\d{10})_(?P<date>\d{8})_\d{6}[.]csv
-        $
-        ''',
-        flags=re.VERBOSE)
+    def __init__(self, accounts_by_id):
+        self.accounts_by_id = accounts_by_id
 
-    def __init__(self, root, *subs):
-        self.root = root
-        self.accounts = set([root] + list(subs))
-        self.accounts_by_iban = { a.iban: a for a in self.accounts }
-
-    def identify(self, f):
-        m = ASNImporter.match_re.match(f.name)
-        return m and m.groupdict()['account'] in self.root.iban
-
-    def file_name(self, file):
-        return 'asn.{}'.format(path.basename(file.name))
-
-    def file_account(self, _):
-        return self.root.bean
+    def identify(self, file):
+        for id, acct in self.accounts_by_id.items():
+            m = acct.file_match_re and acct.file_match_re.match(file.name)
+            if m and m.groupdict()['id'] == id and acct.institution == 'ASN':
+                return m
+        return None
 
     def file_date(self, file):
-        date_str = ASNImporter.match_re.match(file.name).groupdict()['date']
-        return datetime.strptime(date_str, '%d%m%Y').date()
+        m = self.identify(file)
+        assert(m != None)
+        return datetime.strptime(m['end_date'], '%Y-%m-%d').date()
 
     def extract(self, file):
+        m = self.identify(file)
+        assert(m != None)
+
         def rows():
             with open(file.name) as f:
-                reader = csv.DictReader(f, fieldnames=field_names, quotechar="'")
+                reader = csv.DictReader(f, delimiter=';', quotechar='"')
                 for index, row in enumerate(reader):
                   row['_meta'] = data.new_metadata(file.name, index)
                   yield row
@@ -78,26 +69,33 @@ class ASNImporter(importer.ImporterProtocol):
         def row_to_txn(row):
             try:
                 date = datetime.strptime(row['Boekingsdatum'], '%d-%m-%Y').date()
-                amount_  = row['Transactiebedrag'].replace(',', '.')
-                account = self.accounts_by_iban[row['Opdrachtgeversrekening']]
-                posting = data.Posting(
-                    account.bean, amount.Amount(D(amount_), account.currency),
-                    None, None, None, None)
-                counterparty = row['Tegenrekeningnummer'] # accounts_by_iban.get(row.get('Counterparty'))
-                # TODO do counterparty stuff
-                # accounts.
+                currency = row['Valutasoort rekening']
+                units = D(row['Transactiebedrag'].replace(',', '.'))
+                acct = self.accounts_by_id[row['Opdrachtgeversrekening']]
+                counterparty = row['Tegenrekeningnummer']
+                counterparty_acct = self.accounts_by_id.get(counterparty)
 
-                assert row['Valutasoort rekening'] == 'EUR'
+                assert currency == 'EUR'
+                assert currency == acct.currency
+
+                postings = [
+                    data.Posting(acct.bean, amount.Amount(units, acct.currency), None, None, None, None),
+                ]
+                if counterparty_acct:
+                    assert counterparty_acct.currency == acct.currency # TODO allow multi-currency event.
+                    postings.append(
+                        data.Posting(counterparty_acct.bean, amount.Amount(-units, acct.currency), None, None, None, None)
+                    )
 
                 txn = data.Transaction(
                     meta=row['_meta'],
                     date=date,
-                    flag=flags.FLAG_OKAY,
+                    flag=flags.FLAG_TRANSFER if counterparty_acct else flags.FLAG_OKAY,
                     payee=row['Naam tegenrekening'] or row['Tegenrekeningnummer'],
                     narration=row['Omschrijving'],
                     tags=set(),
                     links=set(),
-                    postings=[posting],
+                    postings=postings,
                 )
                 return txn
             except:
